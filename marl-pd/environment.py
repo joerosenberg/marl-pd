@@ -3,8 +3,11 @@ import numpy as np
 from nptyping import NDArray
 from typing import Any, Union
 
-# Define types + type constants
-OBSERVATION_DIM = 2
+# Define constants:
+OBSERVATION_DIM = 2  # Dimension of the agent observation vector
+NEIGHBOURHOOD_RADIUS = 1  # Radius of an agent's interaction neighbourhood (using Manhattan distance).
+
+# Define types:
 AgentPositions = NDArray[(Any, 2), int]  # Type of array storing positions of agents.
 AgentLinearPolicyParameters = NDArray[(Any, OBSERVATION_DIM + 1), float]  # Type of array storing agent's policy
 # parameters.
@@ -83,9 +86,10 @@ class MAPDEnvironment(gym.Env):
         self.cost_of_living = cost_of_living
 
         # Initialise variables for storing environment state:
-        # Arrays for storing agent positions and energies
+        # Arrays for storing agent positions, energies and partners.
         self.agent_positions: AgentPositions
         self.agent_energies: AgentEnergies
+        self.agent_partners: AgentPositions
 
         # Array for storing agent policy parameters
         self.agent_policies: AgentLinearPolicyParameters
@@ -94,13 +98,17 @@ class MAPDEnvironment(gym.Env):
         # Allows for fast lookup of neighbours for each agent.
         self.occupancy_grid = np.zeros((grid_height, grid_width), dtype=np.bool)
 
+        # Index grid stores the index of the agent living in that square.
+        self.index_grid = np.empty_like(self.occupancy_grid, dtype=np.int)
+        self.index_grid[:] = np.nan
+
         # Cooperation and defection grid stores the number of times that the agent living at that square has cooperated
         # or defected. Using for efficiently looking up observations for agents.
         self.cooperation_grid = np.zeros((grid_height, grid_width), dtype=np.int)
         self.defection_grid = np.zeros((grid_height, grid_width), dtype=np.int)
 
         # Set up initial state.
-        self.reset
+        self.reset()
 
     def step(self, actions: NDArray[(Any, 1), bool]):
         """
@@ -108,6 +116,89 @@ class MAPDEnvironment(gym.Env):
         :param actions: List of actions
         :return:
         """
+        # Play game between each chosen pair of agents and produce list of energy payoffs
+
+        # Update agent energies using payoffs from the games and the cost of living
+
+        # Kill agents with 0 or less energy
+
+        # Agent reproduction:
+        # For each agent with energy > self.reproduce_cost, spawn a new agent with the same policy nearby.
+        # New agents spawn with energy equal to self.reproduce_cost, and agents that reproduce lose the same amount
+        # of energy.
+
+        # Select partners for each agent randomly.
+        self._select_partners()
+
+    def _select_partners(self):
+        """
+        Selects new game partners for each agent.
+        :return:
+        """
+        # Array to keep track of which agents have been partnered up so far.
+        is_partnered = np.zeros_like(self.occupancy_grid, dtype=np.bool)
+
+        # Reset list of agent partners, using NaNs to represent agents without partners.
+        self.agent_partners = np.empty_like(self.agent_positions)
+        self.agent_partners[:] = np.nan
+
+        # Iterate through all agents in a random order to avoid newer agents (which appear at the bottom of the
+        # self.agent_positions list) having a worse chance at finding a partner.
+        for i in np.random.permutation(self.agent_positions.shape[0]):
+            # If the agent is already partnered up with an earlier agent, skip the computation and go to the next agent.
+            if is_partnered[i]:
+                continue
+
+            # Find a partner for the current agent:
+            # Get the position of the current agent
+            agent_position = self.agent_positions[i]
+            # Get the neighbours of the current agent
+            agent_neighbour_positions = self._get_neighbours(agent_position)
+
+            # Get the neighbours of the current agent that aren't yet partnered
+            is_neighbour_partnered = is_partnered[agent_neighbour_positions]
+            unpartnered_neighbour_indices = np.argwhere(is_neighbour_partnered.logical_not())
+
+            # Select an unpartnered agent at random
+            new_partner_index = np.random.choice(unpartnered_neighbour_indices)
+            new_partner_position = agent_neighbour_positions[new_partner_index]
+
+            # TODO: Update the self.agent_partners and is_partnered arrays with this choice
+            self.agent_partners = ...
+
+    def _get_neighbours(self, agent_position: NDArray[(1, 2), int]) -> AgentPositions:
+        """
+        Finds the living neighbours of an agent at a given position.
+        :param agent_position: Position of the agent that we wish to find neighbours of.
+        :return: List of positions of neighbouring agents.
+        """
+        # Here, we define neighbours as agents living within a square centered at the given agent.
+        # The size of the square is defined by the constant NEIGHBOURHOOD_RADIUS.
+
+        # Calculate slice indices of clipped square of self.occupancy_grid around the current agent.
+        lower_slice_indices = np.clip(agent_position - NEIGHBOURHOOD_RADIUS,
+                                      a_min=0, a_max=[self.grid_height, self.grid_width])
+        higher_slice_indices = np.clip(agent_position + NEIGHBOURHOOD_RADIUS + 1,
+                                       a_min=0, a_max=[self.grid_height, self.grid_width])
+
+        # Assertion: lower slice indices are lower than higher slice indices (duh)
+        assert (lower_slice_indices < higher_slice_indices).all()
+
+        # Use slice indices to get neighbourhood of occupancy grid around the current agent.
+        lower_y, lower_x = lower_slice_indices
+        higher_y, higher_x = higher_slice_indices
+        neighbour_occupancies = self.occupancy_grid[lower_y:higher_y, lower_x:higher_x]
+
+        # Set element of neighbour_occupancies corresponding to the current agent to False, since we don't want to
+        # include the current agent in the list of its neighbours.
+        neighbour_occupancies[NEIGHBOURHOOD_RADIUS, NEIGHBOURHOOD_RADIUS] = False
+
+        # Get positions of neighbours:
+        # np.argwhere(neighbour_occupancies) returns the indices corresponding to neighbours in the smaller array
+        # neighbour_occupancies, so we need to translate these indices by agent_position - NEIGHBOURHOOD_RADIUS
+        # to recover the actual positions.
+        neighbour_positions = agent_position + np.argwhere(neighbour_occupancies) - NEIGHBOURHOOD_RADIUS
+        return neighbour_positions
 
     def reset(self) -> AgentObservations:
         """
