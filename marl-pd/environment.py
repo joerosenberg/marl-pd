@@ -11,7 +11,7 @@ AgentLinearPolicyParameters = NDArray[(Any, OBSERVATION_DIM + 1), float]  # Type
 AgentObservations = NDArray[(Any, OBSERVATION_DIM), float]  # Type of array storing agent's observations.
 AgentEnergies = NDArray[(Any, 1), int]  # Type of array storing agent's energies (accumulated payoffs that determine
 # whether the agent will reproduce or die.
-AgentActions = NDArray[(Any, 1), bool] # Type of array corresponding to a list of agent actions.
+AgentActions = NDArray[(Any, 1), bool]  # Type of array corresponding to a list of agent actions.
 # True represents cooperation, False represents defection.
 
 
@@ -94,13 +94,22 @@ class MAPDEnvironment(gym.Env):
         # Allows for fast lookup of neighbours for each agent.
         self.occupancy_grid = np.zeros((grid_height, grid_width), dtype=np.bool)
 
+        # Cooperation and defection grid stores the number of times that the agent living at that square has cooperated
+        # or defected. Using for efficiently looking up observations for agents.
+        self.cooperation_grid = np.zeros((grid_height, grid_width), dtype=np.int)
+        self.defection_grid = np.zeros((grid_height, grid_width), dtype=np.int)
+
         # Set up initial state.
-        self.reset()
+        self.reset
 
-    def step(self, action):
-        pass
+    def step(self, actions: NDArray[(Any, 1), bool]):
+        """
 
-    def reset(self):
+        :param actions: List of actions
+        :return:
+        """
+
+    def reset(self) -> AgentObservations:
         """
         Resets the state of the gridworld according to the simulation parameters.
         :return:
@@ -118,8 +127,13 @@ class MAPDEnvironment(gym.Env):
             axis=1
         )
 
-        # Populate the occupancy grid using the agent positions.
+        # Reset and populate the occupancy grid using the agent positions.
+        self.occupancy_grid = np.zeros((self.grid_height, self.grid_width), dtype=np.bool)
         self.occupancy_grid[self.agent_positions] = True
+
+        # Reset the cooperation and defection grids.
+        self.cooperation_grid = np.zeros((self.grid_height, self.grid_width), dtype=np.int)
+        self.defection_grid = np.zeros((self.grid_height, self.grid_width), dtype=np.int)
 
         # Initialise the agent policies:
         # The first coop_agent_cutoff agents in the list are cooperative
@@ -134,7 +148,31 @@ class MAPDEnvironment(gym.Env):
         # Initialise the agent energies
         # TODO: add separate parameter for starting energy. At the moment we initialise agents with energy equal to
         # the reproduction cost, as is done in the Smaldino paper.
-        self.agent_energies = np.ones((self.nb_initial_agents, 1)) * self.reproduce_cost
+        self.agent_energies = np.full((self.nb_initial_agents, 1), self.reproduce_cost)
+
+        # Return the initial observations (i.e. all zeroes).
+        obs = np.zeros((self.nb_initial_agents, OBSERVATION_DIM))
+        return obs
+
+    def _produce_observations(self, partner_positions: AgentPositions) -> AgentObservations:
+        """
+        For each agent, gets the number of times that it has cooperated and defected, as well as the number of times
+        that its current partner has cooperated and defected. Then, formats these as a list of agent observations.
+        :param partner_positions: List of positions of the partners for each agent. The i_th entry in partner_positions
+        corresponds to the partner for the i_th entry of self.agent_positions.
+        :return: List of agent observations for the current state and agent partners.
+        """
+        # Retrieve agent's own cooperation and defection records
+        own_coops = self.cooperation_grid[self.agent_positions]
+        own_defects = self.defection_grid[self.agent_positions]
+        # Retrieve partners' cooperation and defection records
+        partner_coops = self.cooperation_grid[partner_positions]
+        partner_defects = self.defection_grid[partner_positions]
+
+        # Concatenate into one array to produce observations
+        # i_th row has observations for the i_th agent in self.agent_positions
+        obs = np.concatenate(own_coops, own_defects, partner_coops, partner_defects, axis=1)
+        return obs
 
     def render(self, mode='human'):
         pass
