@@ -139,32 +139,49 @@ class MAPDEnvironment(gym.Env):
         is_partnered = np.zeros_like(self.occupancy_grid, dtype=np.bool)
 
         # Reset list of agent partners, using NaNs to represent agents without partners.
-        self.agent_partners = np.empty_like(self.agent_positions)
+        self.agent_partners = np.empty_like(self.agent_positions)   # List of agent partner positions
         self.agent_partners[:] = np.nan
 
-        # Iterate through all agents in a random order to avoid newer agents (which appear at the bottom of the
-        # self.agent_positions list) having a worse chance at finding a partner.
+        # Create dictionary to link back partner assignments:
+        existing_partners = {}
+
+        # Loop through the agents, assigning a partner in each iteration.
+        # Iterate in a random order to avoid newer agents (which appear at the bottom of the self.agent_positions list)
+        # having a worse chance at finding a partner.
         for i in np.random.permutation(self.agent_positions.shape[0]):
-            # If the agent is already partnered up with an earlier agent, skip the computation and go to the next agent.
-            if is_partnered[i]:
-                continue
-
-            # Find a partner for the current agent:
-            # Get the position of the current agent
+            # Get current agent position
             agent_position = self.agent_positions[i]
-            # Get the neighbours of the current agent
-            agent_neighbour_positions = self._get_neighbours(agent_position)
 
-            # Get the neighbours of the current agent that aren't yet partnered
-            is_neighbour_partnered = is_partnered[agent_neighbour_positions]
-            unpartnered_neighbour_indices = np.argwhere(is_neighbour_partnered.logical_not())
+            # If the agent is registered as already being partnered with another agent, look up its partner's position
+            # from the existing_partners dictionary.
+            # Otherwise, select a new partner from its unpartnered neighbours at random.
+            if is_partnered[tuple(agent_position)]:
+                # Look up existing partner from the dictionary
+                new_partner_position = existing_partners.pop(agent_position.tobytes())
+            else:
+                # Find a partner for the current agent:
+                # Get the position of the current agent
+                agent_position = self.agent_positions[i]
+                # Get the neighbours of the current agent
+                agent_neighbour_positions = self._get_neighbours(agent_position)
 
-            # Select an unpartnered agent at random
-            new_partner_index = np.random.choice(unpartnered_neighbour_indices)
-            new_partner_position = agent_neighbour_positions[new_partner_index]
+                # Get the neighbours of the current agent that aren't yet partnered
+                is_neighbour_partnered = is_partnered[agent_neighbour_positions[:,0], agent_neighbour_positions[:,1]]
+                unpartnered_neighbour_indices = np.argwhere(np.logical_not(is_neighbour_partnered))
 
-            # TODO: Update the self.agent_partners and is_partnered arrays with this choice
-            self.agent_partners = ...
+                # Select an unpartnered agent at random
+                new_partner_index = np.random.choice(unpartnered_neighbour_indices.flatten())
+                new_partner_position = agent_neighbour_positions[new_partner_index]
+
+                # Update is_partnered to register both the current agent and the chosen partner as being partnered.
+                is_partnered[tuple(agent_position)] = True
+                is_partnered[tuple(new_partner_position)] = True
+
+                # Write record for the other partner to read.
+                existing_partners[new_partner_position.tobytes()] = agent_position
+
+            # Record agent i's partner in self.agent_partners.
+            self.agent_partners[i] = new_partner_position
 
     def _get_neighbours(self, agent_position: NDArray[(1, 2), int]) -> AgentPositions:
         """
@@ -195,10 +212,10 @@ class MAPDEnvironment(gym.Env):
 
         # Get positions of neighbours:
         # np.argwhere(neighbour_occupancies) returns the indices corresponding to neighbours in the smaller array
-        # neighbour_occupancies, so we need to translate these indices by agent_position - NEIGHBOURHOOD_RADIUS
-        # to recover the actual positions.
-        neighbour_positions = agent_position + np.argwhere(neighbour_occupancies) - NEIGHBOURHOOD_RADIUS
-        return neighbour_positions
+        # neighbour_occupancies, so we need to translate these indices to recover the actual positions.
+        # lower_y and lower_x give the amount we need to translate by.
+        neighbour_positions = np.array([lower_y, lower_x]) + np.argwhere(neighbour_occupancies)
+        return neighbour_positions.astype(np.int)
 
     def reset(self) -> AgentObservations:
         """
@@ -211,9 +228,9 @@ class MAPDEnvironment(gym.Env):
         # This gives exactly nb_initial_agents different locations.
         self.agent_positions = np.concatenate(
             np.divmod(
-                np.random.randint(0,
-                                  high=self.grid_height * self.grid_width,
-                                  size=(self.nb_initial_agents, 1)),
+                np.random.choice(self.grid_height * self.grid_width,
+                                 size=(self.nb_initial_agents, 1),
+                                 replace=False),
                 self.grid_width),
             axis=1
         )
@@ -234,7 +251,7 @@ class MAPDEnvironment(gym.Env):
         initial_bias_magnitude = np.log(self.initial_action_probability/(1 - self.initial_action_probability))
         self.agent_policies = np.zeros((self.nb_initial_agents, OBSERVATION_DIM + 1))
         self.agent_policies[:coop_agent_cutoff, 0] = initial_bias_magnitude
-        self.agent_positions[coop_agent_cutoff:, 0] = -initial_bias_magnitude
+        self.agent_policies[coop_agent_cutoff:, 0] = -initial_bias_magnitude
 
         # Initialise the agent energies
         # TODO: add separate parameter for starting energy. At the moment we initialise agents with energy equal to
@@ -270,4 +287,6 @@ class MAPDEnvironment(gym.Env):
 
 
 if __name__ == '__main__':
-    MAPDEnvironment(10, 10, 30, 50, 0.5)
+    # Try creating an environment and taking a step without crashing...
+    env = MAPDEnvironment(10, 10, 20, 50, 0.5)
+    env.step(np.zeros((3,1)))
