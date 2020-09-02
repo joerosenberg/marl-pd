@@ -4,7 +4,7 @@ from nptyping import NDArray
 from typing import Any, Union
 
 # Define constants:
-OBSERVATION_DIM = 2  # Dimension of the agent observation vector
+OBSERVATION_DIM = 4  # Dimension of the agent observation vector
 NEIGHBOURHOOD_RADIUS = 1  # Radius of an agent's interaction neighbourhood (using Manhattan distance).
 
 # Define types:
@@ -97,12 +97,12 @@ class MAPDEnvironment(gym.Env):
 
         # Occupancy grid stores whether or not each cell in the gridworld is occupied.
         # Allows for fast lookup of neighbours for each agent.
-        self.occupancy_grid = np.zeros((grid_height, grid_width), dtype=np.bool)
+        self.occupancy_grid = np.zeros((grid_width, grid_height), dtype=np.bool)
 
         # Cooperation and defection grid stores the number of times that the agent living at that square has cooperated
         # or defected. Using for efficiently looking up observations for agents.
-        self.cooperation_grid = np.zeros((grid_height, grid_width), dtype=np.int)
-        self.defection_grid = np.zeros((grid_height, grid_width), dtype=np.int)
+        self.cooperation_grid = np.zeros((grid_width, grid_height), dtype=np.int)
+        self.defection_grid = np.zeros((grid_width, grid_height), dtype=np.int)
 
         # Stores the payoffs for each iteration of the game.
         self.payoffs: AgentEnergies
@@ -123,6 +123,13 @@ class MAPDEnvironment(gym.Env):
 
         # Retrieve partner actions.
         partner_cooperating = action_grid[self.agent_partners[:,0], self.agent_partners[:,1]]
+
+        # Update cooperation and defection grid for agents with partners
+        cooperating_agent_locations = self.agent_positions[np.logical_and(self.has_partner.flatten(), actions)]
+        defecting_agent_locations = self.agent_positions[np.logical_and(self.has_partner.flatten(), np.logical_not(actions))]
+
+        self.cooperation_grid[cooperating_agent_locations[:,0], cooperating_agent_locations[:,1]] += 1
+        self.defection_grid[defecting_agent_locations[:,0], defecting_agent_locations[:,1]] += 1
 
         # Compute payoffs
         agent_cooperating = actions
@@ -162,8 +169,12 @@ class MAPDEnvironment(gym.Env):
         :return:
         """
         # Get indices and positions of dead agents
-        dead_agent_indices = np.argwhere(self.agent_energies <= 0)
+        dead_agent_indices = np.argwhere(self.agent_energies <= 0)[:,0]
         dead_agent_positions = self.agent_positions[dead_agent_indices]
+
+        # If no agents are dead, stop here
+        if dead_agent_indices.size == 0:
+            return
 
         # Remove rows in agent_positions, agent_energies and agent_policies for these agents.
         self.agent_positions = np.delete(self.agent_positions, dead_agent_indices, axis=0)
@@ -186,7 +197,7 @@ class MAPDEnvironment(gym.Env):
         :return:
         """
         # Get indices of agents with enough energy to reproduce.
-        parent_indices = np.argwhere(self.agent_energies >= self.reproduce_threshold)
+        parent_indices = np.argwhere(self.agent_energies >= self.reproduce_threshold)[:,0]
 
         # If there are no agents with enough energy to reproduce, we're done.
         if parent_indices.size == 0:
@@ -205,7 +216,7 @@ class MAPDEnvironment(gym.Env):
             empty_positions = self._get_unnoccupied_neighbouring_cells(agent_position)
 
             # If there are no empty nearby cells, the agent doesn't reproduce, and we go to the next agent.
-            if not empty_positions:
+            if empty_positions.size == 0:
                 continue
 
             # Choose a nearby empty position at random to place the child in.
@@ -224,8 +235,12 @@ class MAPDEnvironment(gym.Env):
             # Deduct the cost of reproduction from the parent's energy
             self.agent_energies[i] = self.agent_energies[i] - self.reproduce_cost
 
+        # If we didn't manage to spawn any new agents, stop here
+        if len(new_positions) == 0:
+            return
+
         # Add all of the new data to the environment state:
-        self.agent_positions = np.append(self.agent_positions, new_positions, axis=0)
+        self.agent_positions = np.append(self.agent_positions, np.array(new_positions), axis=0)
         self.agent_energies = np.append(self.agent_energies, new_energies, axis=0)
         self.agent_policies = np.append(self.agent_policies, new_policies, axis=0)
         self.payoffs = np.append(self.payoffs, new_payoffs, axis=0)
@@ -257,7 +272,7 @@ class MAPDEnvironment(gym.Env):
             # Otherwise, select a new partner from its unpartnered neighbours at random.
             if is_partnered[tuple(agent_position)]:
                 # Look up existing partner from the dictionary
-                new_partner_position = existing_partners.pop(agent_position.tobytes())
+                new_partner_position = existing_partners.pop(agent_position.astype(np.int).tobytes())
                 self.has_partner[i] = True
                 assert new_partner_position in self.agent_positions
             else:
@@ -284,7 +299,7 @@ class MAPDEnvironment(gym.Env):
                 is_partnered[tuple(new_partner_position)] = True
 
                 # Write record for the other partner to read.
-                existing_partners[new_partner_position.tobytes()] = agent_position
+                existing_partners[new_partner_position.astype(np.int).tobytes()] = agent_position
                 self.has_partner[i] = True
                 assert new_partner_position in self.agent_positions
 
@@ -302,14 +317,14 @@ class MAPDEnvironment(gym.Env):
 
         # Calculate slice indices of clipped square of self.occupancy_grid around the current agent.
         lower_slice_indices = np.clip(agent_position - NEIGHBOURHOOD_RADIUS,
-                                      a_min=0, a_max=[self.grid_height, self.grid_width])
+                                      a_min=0, a_max=[self.grid_width, self.grid_height])
         higher_slice_indices = np.clip(agent_position + NEIGHBOURHOOD_RADIUS + 1,
-                                       a_min=0, a_max=[self.grid_height, self.grid_width])
+                                       a_min=0, a_max=[self.grid_width + 1, self.grid_height + 1])
 
         # Use slice indices to get neighbourhood of occupancy grid around the current agent.
-        lower_y, lower_x = lower_slice_indices
-        higher_y, higher_x = higher_slice_indices
-        neighbour_occupancies = self.occupancy_grid[lower_y:higher_y, lower_x:higher_x]
+        lower_x, lower_y = lower_slice_indices
+        higher_x, higher_y = higher_slice_indices
+        neighbour_occupancies = self.occupancy_grid[lower_x:higher_x, lower_y:higher_y].copy()
 
         # Set element of neighbour_occupancies corresponding to the current agent to False, since we don't want to
         # include the current agent in the list of its neighbours.
@@ -319,7 +334,7 @@ class MAPDEnvironment(gym.Env):
         # np.argwhere(neighbour_occupancies) returns the indices corresponding to neighbours in the smaller array
         # neighbour_occupancies, so we need to translate these indices to recover the actual positions.
         # lower_y and lower_x give the amount we need to translate by.
-        neighbour_positions = np.array([lower_y, lower_x]) + np.argwhere(neighbour_occupancies)
+        neighbour_positions = np.array([lower_x, lower_y]) + np.argwhere(neighbour_occupancies)
         return neighbour_positions.astype(np.int)
 
     def _get_unnoccupied_neighbouring_cells(self, agent_position: NDArray[(1, 2), int]) -> AgentPositions:
@@ -333,24 +348,21 @@ class MAPDEnvironment(gym.Env):
 
         # Calculate slice indices of clipped square of self.occupancy_grid around the current agent.
         lower_slice_indices = np.clip(agent_position - NEIGHBOURHOOD_RADIUS,
-                                      a_min=0, a_max=[self.grid_height, self.grid_width])
+                                      a_min=0, a_max=[self.grid_width, self.grid_height])
         higher_slice_indices = np.clip(agent_position + NEIGHBOURHOOD_RADIUS + 1,
-                                       a_min=0, a_max=[self.grid_height, self.grid_width])
+                                       a_min=0, a_max=[self.grid_width + 1, self.grid_height + 1])
 
         # Use slice indices to get neighbourhood of occupancy grid around the current agent.
-        lower_y, lower_x = lower_slice_indices
-        higher_y, higher_x = higher_slice_indices
-        neighbour_occupancies = self.occupancy_grid[lower_y:higher_y, lower_x:higher_x]
+        lower_x, lower_y = lower_slice_indices
+        higher_x, higher_y = higher_slice_indices
 
-        # Set element of neighbour_occupancies corresponding to the current agent to False, since we don't want to
-        # include the current agent in the list of its neighbours.
-        neighbour_occupancies[NEIGHBOURHOOD_RADIUS, NEIGHBOURHOOD_RADIUS] = False
+        neighbour_occupancies = self.occupancy_grid[lower_x:higher_x, lower_y:higher_y].copy()
 
         # Get positions of neighbours:
         # np.argwhere(neighbour_occupancies) returns the indices corresponding to neighbours in the smaller array
         # neighbour_occupancies, so we need to translate these indices to recover the actual positions.
         # lower_y and lower_x give the amount we need to translate by.
-        empty_positions = np.array([lower_y, lower_x]) + np.argwhere(np.logical_not(neighbour_occupancies))
+        empty_positions = np.array([lower_x, lower_y]) + np.argwhere(np.logical_not(neighbour_occupancies))
         return empty_positions
 
     def reset(self) -> AgentObservations:
@@ -367,17 +379,17 @@ class MAPDEnvironment(gym.Env):
                 np.random.choice(self.grid_height * self.grid_width,
                                  size=(self.nb_initial_agents, 1),
                                  replace=False),
-                self.grid_width),
+                self.grid_height),
             axis=1
         )
 
         # Reset and populate the occupancy grid using the agent positions.
-        self.occupancy_grid = np.zeros((self.grid_height, self.grid_width), dtype=np.bool)
+        self.occupancy_grid = np.zeros((self.grid_width, self.grid_height), dtype=np.bool)
         self.occupancy_grid[self.agent_positions[:,0], self.agent_positions[:,1]] = True
 
         # Reset the cooperation and defection grids.
-        self.cooperation_grid = np.zeros((self.grid_height, self.grid_width), dtype=np.int)
-        self.defection_grid = np.zeros((self.grid_height, self.grid_width), dtype=np.int)
+        self.cooperation_grid = np.zeros((self.grid_width, self.grid_height), dtype=np.int)
+        self.defection_grid = np.zeros((self.grid_width, self.grid_height), dtype=np.int)
 
         # Initialise the agent policies:
         # The first coop_agent_cutoff agents in the list are cooperative
