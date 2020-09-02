@@ -419,7 +419,7 @@ class MAPDEnvironment(gym.Env):
         # Get mask for agents that do have partners.
         indices = self.agent_partners
         partner_coops = np.where(self.has_partner.flatten(), self.cooperation_grid[indices[:, 0], indices[:, 1]], 0)
-        partner_defects = np.where(self.has_partner, self.defection_grid[indices[:, 0], indices[:, 1]], 0)
+        partner_defects = np.where(self.has_partner.flatten(), self.defection_grid[indices[:, 0], indices[:, 1]], 0)
 
         # Concatenate into one array to produce observations
         # i_th row has observations for the i_th agent in self.agent_positions
@@ -433,4 +433,4 @@ class MAPDEnvironment(gym.Env):
 if __name__ == '__main__':
     # Try creating an environment and taking a step without crashing...
     env = MAPDEnvironment(10, 10, 45, 100, 0.5)
-    print(env.step(np.ones(45, dtype=np.bool)))
+    print(env.step(np.zeros(45, dtype=np.bool)))
