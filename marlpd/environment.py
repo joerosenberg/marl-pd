@@ -2,10 +2,15 @@ import gym
 import numpy as np
 from nptyping import NDArray
 from typing import Any, Union
+from gym.envs.classic_control import rendering
 
 # Define constants:
 OBSERVATION_DIM = 4  # Dimension of the agent observation vector
 NEIGHBOURHOOD_RADIUS = 1  # Radius of an agent's interaction neighbourhood (using Manhattan distance).
+
+# Rendering constants
+SCREEN_WIDTH = 640
+SCREEN_HEIGHT = 480
 
 # Define types:
 AgentPositions = NDArray[(Any, 2), int]  # Type of array storing positions of agents.
@@ -106,6 +111,9 @@ class MAPDEnvironment(gym.Env):
 
         # Stores the payoffs for each iteration of the game.
         self.payoffs: AgentEnergies
+
+        # Viewer for rendering
+        self.viewer = None
 
         # Set up initial state.
         self.reset()
@@ -439,8 +447,51 @@ class MAPDEnvironment(gym.Env):
         return obs
 
     def render(self, mode='human'):
-        pass
+        cell_width = SCREEN_WIDTH / self.grid_width  # Width of one grid cell
+        cell_height = SCREEN_HEIGHT / self.grid_height  # Height of one grid cell
+        scale = np.array([cell_width, cell_height])
+        square_offsets = np.array([[-cell_width, -cell_height],
+                                   [cell_width, -cell_height],
+                                   [cell_width, cell_height],
+                                   [-cell_width, cell_height]]) * 0.4
 
+        # Initialise viewer if it hasn't yet been created
+        if self.viewer is None:
+            self.viewer = rendering.Viewer(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+        # Compute agent colours
+        self._compute_colours()
+
+        for i in range(self.agent_positions.shape[0]):
+            # Get agent colour
+            colour = self.colours[i]
+            # Draw a square for each agent
+            self.viewer.draw_polygon((self.agent_positions[i] * scale + scale/2) + square_offsets, color=colour)
+
+            # Draw lines between interacting agents
+            if self.has_partner[i]:
+                start = self.agent_positions[i] * scale + scale/2
+                end = self.agent_partners[i] * scale + scale/2
+                self.viewer.draw_line(start, end)
+
+        return self.viewer.render()
+
+    def _compute_colours(self):
+        """
+        Computes colourings for all agents.
+        :return:
+        """
+        # Colour based on bias parameter - linearly interpolate between red (for defect) and blue (for cooperate)
+        biases = self.agent_policies[:,0]
+        bias_min = np.min(biases)
+        bias_max = np.max(biases)
+
+        blue = np.array([0, 0, 1.0])
+        red = np.array([1.0, 0, 0])
+
+        normalised_biases = np.expand_dims((biases - bias_min) / (bias_max - bias_min), axis=1)
+
+        self.colours = normalised_biases * blue + (1 - normalised_biases) * red
 
 if __name__ == '__main__':
     # Try creating an environment and taking a step without crashing...
