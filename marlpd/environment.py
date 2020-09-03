@@ -220,16 +220,12 @@ class MAPDEnvironment(gym.Env):
         for i in np.random.permutation(parent_indices):
             agent_position = self.agent_positions[i]
 
-            # Find empty cells near the agent.
-            empty_positions = self._get_unnoccupied_neighbouring_cells(agent_position)
+            # Get empty cell near the agent.
+            child_position = self._get_random_unoccupied_neighbouring_cell(agent_position)
 
             # If there are no empty nearby cells, the agent doesn't reproduce, and we go to the next agent.
-            if empty_positions.size == 0:
+            if child_position is None:
                 continue
-
-            # Choose a nearby empty position at random to place the child in.
-            empty_index = np.random.randint(empty_positions.shape[0])
-            child_position = empty_positions[empty_index]
 
             # Add the position, energy and policy of the child to the lists:
             new_positions.append(child_position)
@@ -258,8 +254,8 @@ class MAPDEnvironment(gym.Env):
         Selects new game partners for each agent.
         :return:
         """
-        # Array to keep track of which agents have been partnered up so far.
-        is_partnered = np.zeros_like(self.occupancy_grid, dtype=np.bool)
+        # Grid to keep track of which agents have been partnered up so far.
+        self.is_partnered = np.zeros_like(self.occupancy_grid, dtype=np.bool)
 
         # Reset list of agent partners, using NaNs to represent agents without partners.
         self.agent_partners = np.zeros_like(self.agent_positions)   # List of agent partner positions
@@ -278,38 +274,26 @@ class MAPDEnvironment(gym.Env):
             # If the agent is registered as already being partnered with another agent, look up its partner's position
             # from the existing_partners dictionary.
             # Otherwise, select a new partner from its unpartnered neighbours at random.
-            if is_partnered[tuple(agent_position)]:
+            if self.is_partnered[tuple(agent_position)]:
                 # Look up existing partner from the dictionary
                 new_partner_position = existing_partners.pop(agent_position.astype(np.int).tobytes())
                 self.has_partner[i] = True
-                assert new_partner_position in self.agent_positions
             else:
                 # Find a partner for the current agent:
-                # Get the position of the current agent
-                agent_position = self.agent_positions[i]
-                # Get the neighbours of the current agent
-                agent_neighbour_positions = self._get_neighbours(agent_position)
-
-                # Get the neighbours of the current agent that aren't yet partnered
-                is_neighbour_partnered = is_partnered[agent_neighbour_positions[:,0], agent_neighbour_positions[:,1]]
-                unpartnered_neighbour_indices = np.argwhere(np.logical_not(is_neighbour_partnered))
+                # Get a random unpartnered neighbour for the current agent
+                new_partner_position = self._get_random_neighbouring_unpartnered_agent(agent_position)
 
                 # If there are none, we can't find the agent a partner, so we go to the next agent
-                if len(unpartnered_neighbour_indices) == 0:
+                if new_partner_position is None:
                     continue
 
-                # Select an unpartnered agent at random
-                new_partner_index = np.random.choice(unpartnered_neighbour_indices.flatten())
-                new_partner_position = agent_neighbour_positions[new_partner_index]
-
                 # Update is_partnered to register both the current agent and the chosen partner as being partnered.
-                is_partnered[tuple(agent_position)] = True
-                is_partnered[tuple(new_partner_position)] = True
+                self.is_partnered[tuple(agent_position)] = True
+                self.is_partnered[tuple(new_partner_position)] = True
 
                 # Write record for the other partner to read.
                 existing_partners[new_partner_position.astype(np.int).tobytes()] = agent_position
                 self.has_partner[i] = True
-                assert new_partner_position in self.agent_positions
 
             # Record agent i's partner in self.agent_partners.
             self.agent_partners[i] = new_partner_position
@@ -320,19 +304,14 @@ class MAPDEnvironment(gym.Env):
         :param agent_position: Position of the agent that we wish to find neighbours of.
         :return: List of positions of neighbouring agents.
         """
-        # Here, we define neighbours as agents living within a square centered at the given agent.
-        # The size of the square is defined by the constant NEIGHBOURHOOD_RADIUS.
-
-        # Calculate slice indices of clipped square of self.occupancy_grid around the current agent.
-        lower_slice_indices = np.clip(agent_position - NEIGHBOURHOOD_RADIUS,
-                                      a_min=0, a_max=[self.grid_width, self.grid_height])
-        higher_slice_indices = np.clip(agent_position + NEIGHBOURHOOD_RADIUS + 1,
-                                       a_min=0, a_max=[self.grid_width + 1, self.grid_height + 1])
 
         # Use slice indices to get neighbourhood of occupancy grid around the current agent.
-        lower_x, lower_y = lower_slice_indices
-        higher_x, higher_y = higher_slice_indices
-        neighbour_occupancies = self.occupancy_grid[lower_x:higher_x, lower_y:higher_y].copy()
+        lower_x = self.lower_xs[tuple(agent_position)]
+        lower_y = self.lower_ys[tuple(agent_position)]
+        upper_x = self.upper_xs[tuple(agent_position)]
+        upper_y = self.upper_ys[tuple(agent_position)]
+
+        neighbour_occupancies = self.occupancy_grid[lower_x:upper_x, lower_y:upper_y].copy()
 
         # Set element of neighbour_occupancies corresponding to the current agent to False, since we don't want to
         # include the current agent in the list of its neighbours.
@@ -345,26 +324,85 @@ class MAPDEnvironment(gym.Env):
         neighbour_positions = np.array([lower_x, lower_y]) + np.argwhere(neighbour_occupancies)
         return neighbour_positions.astype(np.int)
 
+    def _get_neighbourhood_bounds(self, agent_position):
+        """
+        Gets the boundaries of the neighbourhood around a cell.
+        :param agent_position:
+        :return:
+        """
+        # Use slice indices to get neighbourhood of occupancy grid around the current agent.
+        lower_x = self.lower_xs[tuple(agent_position)]
+        lower_y = self.lower_ys[tuple(agent_position)]
+        upper_x = self.upper_xs[tuple(agent_position)]
+        upper_y = self.upper_ys[tuple(agent_position)]
+        return lower_x, lower_y, upper_x, upper_y
+
+    def _get_random_unoccupied_neighbouring_cell(self, agent_position):
+        """
+        Gets a random unoccupied cell near an agent at a given position.
+        Faster when trying to find one empty cell because we don't necessarily need to iterate through all neighbours.
+        :param agent_position:
+        :return:
+        """
+        # Get occupancies in neighbourhood around agent
+        lower_x, lower_y, upper_x, upper_y = self._get_neighbourhood_bounds(agent_position)
+        neighbour_occupancies = self.occupancy_grid[lower_x:upper_x, lower_y:upper_y].copy()
+
+        # Iterate through neighbourhood in random order until we find an empty cell, then return its position
+        # If we don't find one, return None.
+        nbhd_width = neighbour_occupancies.shape[0]
+        nbhd_height = neighbour_occupancies.shape[1]
+        indices = np.transpose(
+            [
+                np.tile(np.arange(0, nbhd_width, dtype=np.int), nbhd_height),
+                np.repeat(np.arange(0, nbhd_height, dtype=np.int), nbhd_width)
+            ]
+        )
+
+        for nbhd_position in np.random.permutation(indices):
+            if not neighbour_occupancies[tuple(nbhd_position)]:
+                return nbhd_position + np.array([lower_x, lower_y])
+
+        return None
+
+    def _get_random_neighbouring_unpartnered_agent(self, agent_position):
+        """
+        Gets a random unpartnered agent in the neighbourhood of an agent.
+        :param agent_position:
+        :return:
+        """
+        # Get occupancies in neighbourhood around agent
+        lower_x, lower_y, upper_x, upper_y = self._get_neighbourhood_bounds(agent_position)
+        neighbour_occupancies = self.occupancy_grid[lower_x:upper_x, lower_y:upper_y].copy()
+        neighbour_is_partnered = self.is_partnered[lower_x:upper_x, lower_y:upper_y].copy()
+
+        # Iterate through neighbourhood in random order until we find an empty cell, then return its position
+        # If we don't find one, return None.
+        nbhd_width = neighbour_occupancies.shape[0]
+        nbhd_height = neighbour_occupancies.shape[1]
+        indices = np.transpose(
+            [
+                np.tile(np.arange(0, nbhd_width, dtype=np.int), nbhd_height),
+                np.repeat(np.arange(0, nbhd_height, dtype=np.int), nbhd_width)
+            ]
+        )
+
+        for nbhd_position in np.random.permutation(indices):
+            if neighbour_occupancies[tuple(nbhd_position)] and not neighbour_is_partnered[tuple(nbhd_position)]:
+                return nbhd_position + np.array([lower_x, lower_y])
+
+        return None
+
     def _get_unnoccupied_neighbouring_cells(self, agent_position: NDArray[(1, 2), int]) -> AgentPositions:
         """
         Finds the unoccupied cells near an agent at a given position.
         :param agent_position: Position of the agent that we wish to find empty cells near.
         :return: List of positions of neighbouring empty cells.
         """
-        # TODO: Refactor this along with _get_neighbours to remove duplicate code.
-        # The size of the square is defined by the constant NEIGHBOURHOOD_RADIUS.
 
-        # Calculate slice indices of clipped square of self.occupancy_grid around the current agent.
-        lower_slice_indices = np.clip(agent_position - NEIGHBOURHOOD_RADIUS,
-                                      a_min=0, a_max=[self.grid_width, self.grid_height])
-        higher_slice_indices = np.clip(agent_position + NEIGHBOURHOOD_RADIUS + 1,
-                                       a_min=0, a_max=[self.grid_width + 1, self.grid_height + 1])
+        lower_x, lower_y, upper_x, upper_y = self._get_neighbourhood_bounds(agent_position)
 
-        # Use slice indices to get neighbourhood of occupancy grid around the current agent.
-        lower_x, lower_y = lower_slice_indices
-        higher_x, higher_y = higher_slice_indices
-
-        neighbour_occupancies = self.occupancy_grid[lower_x:higher_x, lower_y:higher_y].copy()
+        neighbour_occupancies = self.occupancy_grid[lower_x:upper_x, lower_y:upper_y].copy()
 
         # Get positions of neighbours:
         # np.argwhere(neighbour_occupancies) returns the indices corresponding to neighbours in the smaller array
@@ -414,12 +452,36 @@ class MAPDEnvironment(gym.Env):
         # the reproduction cost, as is done in the Smaldino paper.
         self.agent_energies = np.full((self.nb_initial_agents, 1), self.reproduce_cost)
 
+        # Precompute the neighbourhood boundaries for all agents.
+        self._compute_neighbourhood_boundaries()
+
         # Choose initial partners
         self._select_partners()
 
         # Return the initial observations (i.e. all zeroes).
         obs = self._produce_observations()
         return obs
+
+    def _compute_neighbourhood_boundaries(self):
+        """
+        Computes and stores the neighbourhood boundaries for each grid cell.
+        :return:
+        """
+        self.lower_xs = np.zeros_like(self.occupancy_grid, dtype=np.int)
+        self.lower_ys = np.zeros_like(self.occupancy_grid, dtype=np.int)
+        self.upper_xs = np.zeros_like(self.occupancy_grid, dtype=np.int)
+        self.upper_ys = np.zeros_like(self.occupancy_grid, dtype=np.int)
+
+        for x in range(self.grid_width):
+            for y in range(self.grid_height):
+                lower_x = max(x - NEIGHBOURHOOD_RADIUS, 0)
+                lower_y = max(y - NEIGHBOURHOOD_RADIUS, 0)
+                upper_x = min(x + NEIGHBOURHOOD_RADIUS + 1, self.grid_width + 1)
+                upper_y = min(y + NEIGHBOURHOOD_RADIUS + 1, self.grid_height + 1)
+                self.lower_xs[x, y] = lower_x
+                self.lower_ys[x, y] = lower_y
+                self.upper_xs[x, y] = upper_x
+                self.upper_ys[x, y] = upper_y
 
     def _produce_observations(self) -> AgentObservations:
         """
