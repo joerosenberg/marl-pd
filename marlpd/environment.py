@@ -6,7 +6,7 @@ from gym.envs.classic_control import rendering
 
 # Define constants:
 OBSERVATION_DIM = 4  # Dimension of the agent observation vector
-NEIGHBOURHOOD_RADIUS = 1  # Radius of an agent's interaction neighbourhood (using Manhattan distance).
+NEIGHBOURHOOD_RADIUS = 2  # Radius of an agent's interaction neighbourhood (using Manhattan distance).
 
 # Rendering constants
 SCREEN_WIDTH = 640
@@ -99,6 +99,8 @@ class MAPDEnvironment(gym.Env):
 
         # Array for storing agent policy parameters
         self.agent_policies: AgentLinearPolicyParameters
+        self.policy_gradients: AgentLinearPolicyParameters
+        self.step_size = 0.1 #TODO : add parameter
 
         # Occupancy grid stores whether or not each cell in the gridworld is occupied.
         # Allows for fast lookup of neighbours for each agent.
@@ -125,9 +127,16 @@ class MAPDEnvironment(gym.Env):
         :return:
         """
         # Play game between each chosen pair of agents and produce list of energy payoffs:
+        # Calculate agent action probabilities:
+        self.coop_probabilities = 1 / (1 + np.exp(-self.agent_policies[:,0] - np.tensordot(self.agent_policies[:,1:], self.obs, axes=2)))
+        # Select actions using these probabilities:
+        self.actions = np.random.rand(*self.coop_probabilities.shape) <= self.coop_probabilities
+        # Compute gradients for the selected actions:
+        self.policy_gradients = np.expand_dims(np.where(self.actions, self.coop_probabilities - 1, self.coop_probabilities), axis=1) * np.concatenate((np.ones((self.obs.shape[0], 1)), self.obs), axis=1)
+
         # Store agent actions in grid.
         action_grid = np.zeros_like(self.occupancy_grid, dtype=np.bool)
-        action_grid[self.agent_positions[:,0], self.agent_positions[:,1]] = actions
+        action_grid[self.agent_positions[:,0], self.agent_positions[:,1]] = self.actions
 
         # Retrieve partner actions.
         partner_cooperating = action_grid[self.agent_partners[:,0], self.agent_partners[:,1]]
@@ -136,8 +145,10 @@ class MAPDEnvironment(gym.Env):
         cooperating_agent_locations = self.agent_positions[np.logical_and(self.has_partner.flatten(), actions)]
         defecting_agent_locations = self.agent_positions[np.logical_and(self.has_partner.flatten(), np.logical_not(actions))]
 
-        self.cooperation_grid[cooperating_agent_locations[:,0], cooperating_agent_locations[:,1]] += 1
-        self.defection_grid[defecting_agent_locations[:,0], defecting_agent_locations[:,1]] += 1
+        self.cooperation_grid = np.zeros_like(self.occupancy_grid)
+        self.defection_grid = np.zeros_like(self.occupancy_grid)
+        self.cooperation_grid[cooperating_agent_locations[:,0], cooperating_agent_locations[:,1]] = 1
+        self.defection_grid[defecting_agent_locations[:,0], defecting_agent_locations[:,1]] = 1
 
         # Compute payoffs
         agent_cooperating = actions
@@ -152,6 +163,9 @@ class MAPDEnvironment(gym.Env):
 
         # Update agent energies using payoffs from the games and the cost of living
         self.agent_energies = np.minimum(self.agent_energies + np.expand_dims(self.payoffs, 1) - self.cost_of_living, self.max_energy)
+
+        # Update agent policies using payoffs and policy gradients
+        self.agent_policies = self.agent_policies - self.step_size * np.expand_dims(self.payoffs, axis=1) * self.policy_gradients
 
         # Kill agents with 0 or less energy
         self._cull_agents()
@@ -505,8 +519,8 @@ class MAPDEnvironment(gym.Env):
 
         # Concatenate into one array to produce observations
         # i_th row has observations for the i_th agent in self.agent_positions
-        obs = np.column_stack((own_coops, own_defects, partner_coops, partner_defects))
-        return obs
+        self.obs = np.column_stack((own_coops, own_defects, partner_coops, partner_defects))
+        return self.obs
 
     def render(self, mode='human'):
         cell_width = SCREEN_WIDTH / self.grid_width  # Width of one grid cell

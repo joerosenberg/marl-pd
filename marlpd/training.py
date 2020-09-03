@@ -3,12 +3,12 @@ import numpy as np
 
 GRID_WIDTH = 50
 GRID_HEIGHT = 50
-INITIAL_AGENTS = GRID_WIDTH * GRID_HEIGHT // 10
+INITIAL_AGENTS = GRID_WIDTH * GRID_HEIGHT // 15
 MAX_AGENTS = GRID_HEIGHT * GRID_WIDTH
 PROPORTION_COOP_AGENTS = 0.5
 
 # Create new environment
-env = MAPDEnvironment(GRID_HEIGHT, GRID_WIDTH, INITIAL_AGENTS, MAX_AGENTS, PROPORTION_COOP_AGENTS, cost_of_living=0.5, initial_action_probability=0.9)
+env = MAPDEnvironment(GRID_HEIGHT, GRID_WIDTH, INITIAL_AGENTS, MAX_AGENTS, PROPORTION_COOP_AGENTS, cost_of_living=0.5, initial_action_probability=0.99)
 
 # Get initial observations
 obs = env.reset()
@@ -44,6 +44,7 @@ while True:
 
     # Read new policies
     policies = env.agent_policies
+    print(policies)
 
     # Update observations
     obs = new_obs
