@@ -5,7 +5,6 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
 from test_parameters import GRID_SIZE, NB_STEPS, NB_CHECKPOINTS, NB_CLUSTERS
 
-
 def policy_pca(grid_size, nb_steps, nb_checkpoints, nb_clusters):
     """
     Run environment for a bunch of steps, do PCA on policies and save graphs
@@ -15,7 +14,7 @@ def policy_pca(grid_size, nb_steps, nb_checkpoints, nb_clusters):
     :param nb_clusters: number of clusters to produce
     :return: Cluster means
     """
-    env = MAPDEnvironment(grid_size, grid_size, grid_size, grid_size**2, 0.5)
+    env = MAPDEnvironment(grid_size, grid_size, grid_size, grid_size**2, 0.5, initial_action_probability=0.5)
 
     checkpoints = np.linspace(0, nb_steps-1, num=nb_checkpoints, dtype=np.int)
     checkpointed_policies = []  # Array to store policies we want to analyse
@@ -38,7 +37,7 @@ def policy_pca(grid_size, nb_steps, nb_checkpoints, nb_clusters):
         reduced_policies = pca.transform(checkpointed_policies[i])
         plt.figure()
         plt.scatter(reduced_policies[:,0], reduced_policies[:,1])
-        plt.savefig('test_{}.png'.format(i))
+        plt.savefig('test_mixed{}.png'.format(i))
 
     # Cluster the last checkpoint
     final_policies = checkpointed_policies[nb_checkpoints-1]
@@ -48,7 +47,7 @@ def policy_pca(grid_size, nb_steps, nb_checkpoints, nb_clusters):
     # Plot final policies coloured by cluster
     print(kmeans.predict(final_policies))
     plt.scatter(final_reduced_policies[:,0], final_reduced_policies[:,1], c=kmeans.predict(final_policies))
-    plt.savefig('testfinal.png')
+    plt.savefig('testfinal_mixed.png')
 
     return kmeans.cluster_centers_
 
@@ -157,6 +156,6 @@ print(means)
 
 # Compute responses
 for i in range(means.shape[0]):
-    test_agent(means[i], always_coop_agent, 500, 'always_coop{}.png'.format(i))
-    test_agent(means[i], always_defect_agent, 500, 'always_defect{}.png'.format(i))
-    test_agent(means[i], tit_for_tat_agent, 500, 'tit_for_tat{}.png'.format(i))
+    test_agent(means[i], always_coop_agent, 500, 'always_coop_mixed{}.png'.format(i))
+    test_agent(means[i], always_defect_agent, 500, 'always_defect_mixed{}.png'.format(i))
+    test_agent(means[i], tit_for_tat_agent, 500, 'tit_for_tat_mixed{}.png'.format(i))
