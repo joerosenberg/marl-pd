@@ -5,8 +5,9 @@ from typing import Any, Union
 from gym.envs.classic_control import rendering
 
 # Define constants:
-OBSERVATION_DIM = 4  # Dimension of the agent observation vector
-NEIGHBOURHOOD_RADIUS = 2  # Radius of an agent's interaction neighbourhood (using Manhattan distance).
+OBSERVATION_DIM = 8  # Dimension of the agent observation vector
+NEIGHBOURHOOD_RADIUS = 1  # Radius of an agent's interaction neighbourhood (using Manhattan distance).
+OBSERVATION_DISCOUNT_FACTOR = 0.5
 
 # Rendering constants
 SCREEN_WIDTH = 640
@@ -100,7 +101,7 @@ class MAPDEnvironment(gym.Env):
         # Array for storing agent policy parameters
         self.agent_policies: AgentLinearPolicyParameters
         self.policy_gradients: AgentLinearPolicyParameters
-        self.step_size = 0.1 #TODO : add parameter
+        self.step_size = 0.01 #TODO : add parameter
 
         # Occupancy grid stores whether or not each cell in the gridworld is occupied.
         # Allows for fast lookup of neighbours for each agent.
@@ -110,6 +111,8 @@ class MAPDEnvironment(gym.Env):
         # or defected. Using for efficiently looking up observations for agents.
         self.cooperation_grid = np.zeros((grid_width, grid_height), dtype=np.int)
         self.defection_grid = np.zeros((grid_width, grid_height), dtype=np.int)
+        self.cooperation_grid2 = np.zeros((grid_width, grid_height), dtype=np.float)
+        self.defection_grid2 = np.zeros((grid_width, grid_height), dtype=np.float)
 
         # Stores the payoffs for each iteration of the game.
         self.payoffs: AgentEnergies
@@ -120,19 +123,18 @@ class MAPDEnvironment(gym.Env):
         # Set up initial state.
         self.reset()
 
-    def step(self, actions: NDArray[(Any, 1), bool]):
+    def step(self):
         """
-
-        :param actions: List of actions
         :return:
         """
         # Play game between each chosen pair of agents and produce list of energy payoffs:
         # Calculate agent action probabilities:
-        self.coop_probabilities = 1 / (1 + np.exp(-self.agent_policies[:,0] - np.tensordot(self.agent_policies[:,1:], self.obs, axes=2)))
+
+        self.coop_probabilities = 1 / (1 + np.exp(-self.agent_policies[:,0] - (self.agent_policies[:,1:] * self.obs).sum(axis=1)))
         # Select actions using these probabilities:
         self.actions = np.random.rand(*self.coop_probabilities.shape) <= self.coop_probabilities
         # Compute gradients for the selected actions:
-        self.policy_gradients = np.expand_dims(np.where(self.actions, self.coop_probabilities - 1, self.coop_probabilities), axis=1) * np.concatenate((np.ones((self.obs.shape[0], 1)), self.obs), axis=1)
+        self.policy_gradients = np.expand_dims(np.where(self.actions, 1 - self.coop_probabilities, -self.coop_probabilities), axis=1) * np.concatenate((np.ones((self.obs.shape[0], 1)), self.obs), axis=1)
 
         # Store agent actions in grid.
         action_grid = np.zeros_like(self.occupancy_grid, dtype=np.bool)
@@ -142,16 +144,20 @@ class MAPDEnvironment(gym.Env):
         partner_cooperating = action_grid[self.agent_partners[:,0], self.agent_partners[:,1]]
 
         # Update cooperation and defection grid for agents with partners
-        cooperating_agent_locations = self.agent_positions[np.logical_and(self.has_partner.flatten(), actions)]
-        defecting_agent_locations = self.agent_positions[np.logical_and(self.has_partner.flatten(), np.logical_not(actions))]
+        cooperating_agent_locations = self.agent_positions[np.logical_and(self.has_partner.flatten(), self.actions)]
+        defecting_agent_locations = self.agent_positions[np.logical_and(self.has_partner.flatten(), np.logical_not(self.actions))]
 
         self.cooperation_grid = np.zeros_like(self.occupancy_grid)
         self.defection_grid = np.zeros_like(self.occupancy_grid)
         self.cooperation_grid[cooperating_agent_locations[:,0], cooperating_agent_locations[:,1]] = 1
         self.defection_grid[defecting_agent_locations[:,0], defecting_agent_locations[:,1]] = 1
 
+        # Time-decayed cooperation/defection tracking grids
+        self.cooperation_grid2 = self.cooperation_grid * OBSERVATION_DISCOUNT_FACTOR  + self.cooperation_grid2 * (1 - OBSERVATION_DISCOUNT_FACTOR)
+        self.defection_grid2 = self.defection_grid * OBSERVATION_DISCOUNT_FACTOR + self.defection_grid2 * (1 - OBSERVATION_DISCOUNT_FACTOR)
+
         # Compute payoffs
-        agent_cooperating = actions
+        agent_cooperating = self.actions
         self.payoffs = np.where(self.has_partner.flatten(),
                                 np.where(
                                     agent_cooperating,
@@ -165,7 +171,7 @@ class MAPDEnvironment(gym.Env):
         self.agent_energies = np.minimum(self.agent_energies + np.expand_dims(self.payoffs, 1) - self.cost_of_living, self.max_energy)
 
         # Update agent policies using payoffs and policy gradients
-        self.agent_policies = self.agent_policies - self.step_size * np.expand_dims(self.payoffs, axis=1) * self.policy_gradients
+        self.agent_policies = self.agent_policies + self.step_size * np.expand_dims(self.payoffs - self.cost_of_living, axis=1) * self.policy_gradients
 
         # Kill agents with 0 or less energy
         self._cull_agents()
@@ -212,6 +218,8 @@ class MAPDEnvironment(gym.Env):
         # Reset the action counters for the dead agents.
         self.cooperation_grid[dead_agent_positions[:, 0], dead_agent_positions[:, 1]] = 0
         self.defection_grid[dead_agent_positions[:, 0], dead_agent_positions[:, 1]] = 0
+        self.cooperation_grid2[dead_agent_positions[:, 0], dead_agent_positions[:, 1]] = 0
+        self.defection_grid2[dead_agent_positions[:, 0], dead_agent_positions[:, 1]] = 0
 
     def _spawn_agents(self):
         """
@@ -244,7 +252,7 @@ class MAPDEnvironment(gym.Env):
             # Add the position, energy and policy of the child to the lists:
             new_positions.append(child_position)
             new_energies.append([self.reproduce_cost])
-            new_policies.append(self.agent_policies[i])  # Copy the parent's policy to the child
+            new_policies.append(self.agent_policies[i] + np.random.normal(0, 1.0, OBSERVATION_DIM+1))  # Copy the parent's policy to the child (with random noise)
             new_payoffs.append(0)
 
             # Register the child in the occupancy grid
@@ -509,6 +517,8 @@ class MAPDEnvironment(gym.Env):
         # Retrieve agent's own cooperation and defection records
         own_coops = self.cooperation_grid[self.agent_positions[:, 0], self.agent_positions[:, 1]]
         own_defects = self.defection_grid[self.agent_positions[:, 0], self.agent_positions[:, 1]]
+        own_coops2 = self.cooperation_grid2[self.agent_positions[:, 0], self.agent_positions[:, 1]]
+        own_defects2 = self.defection_grid2[self.agent_positions[:, 0], self.agent_positions[:, 1]]
 
         # Retrieve partners' cooperation and defection records:
         # We return 0, 0 if the agent doesn't have a partner.
@@ -516,10 +526,13 @@ class MAPDEnvironment(gym.Env):
         indices = self.agent_partners
         partner_coops = np.where(self.has_partner.flatten(), self.cooperation_grid[indices[:, 0], indices[:, 1]], 0)
         partner_defects = np.where(self.has_partner.flatten(), self.defection_grid[indices[:, 0], indices[:, 1]], 0)
+        partner_coops2 = np.where(self.has_partner.flatten(), self.cooperation_grid2[indices[:, 0], indices[:, 1]], 0)
+        partner_defects2 = np.where(self.has_partner.flatten(), self.defection_grid2[indices[:, 0], indices[:, 1]], 0)
+
 
         # Concatenate into one array to produce observations
         # i_th row has observations for the i_th agent in self.agent_positions
-        self.obs = np.column_stack((own_coops, own_defects, partner_coops, partner_defects))
+        self.obs = np.column_stack((own_coops, own_coops2, own_defects, own_defects2, partner_coops, partner_coops2, partner_defects, partner_defects2))
         return self.obs
 
     def render(self, mode='human'):
@@ -557,17 +570,14 @@ class MAPDEnvironment(gym.Env):
         Computes colourings for all agents.
         :return:
         """
-        # Colour based on bias parameter - linearly interpolate between red (for defect) and blue (for cooperate)
-        biases = self.agent_policies[:,0]
-        bias_min = np.min(biases)
-        bias_max = np.max(biases)
+
+        amount_of_cooperation = self.cooperation_grid2[self.agent_positions[:,0], self.agent_positions[:,1]]
+        amount_of_defection = self.defection_grid2[self.agent_positions[:, 0], self.agent_positions[:, 1]]
 
         blue = np.array([0, 0, 1.0])
         red = np.array([1.0, 0, 0])
 
-        normalised_biases = np.expand_dims((biases - bias_min) / (bias_max - bias_min), axis=1)
-
-        self.colours = normalised_biases * blue + (1 - normalised_biases) * red
+        self.colours = np.expand_dims(amount_of_cooperation, axis=1) * blue + np.expand_dims(amount_of_defection, axis=1) * red
 
 if __name__ == '__main__':
     # Try creating an environment and taking a step without crashing...
